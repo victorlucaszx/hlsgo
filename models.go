@@ -42,15 +42,27 @@ var QualityResolution = map[string]string{
 	"2160p": "3840x2160",
 }
 
+type WatermarkConfig struct {
+	Enabled   bool    `json:"enabled"`
+	S3Path    string  `json:"s3_path"`
+	Position  string  `json:"position"`
+	Opacity   float64 `json:"opacity"`
+	Size      int     `json:"size"`
+}
+
 type ConvertRequest struct {
-	MediaFileID  int      `json:"media_file_id"`
-	Title        string   `json:"title"`
-	S3Path       string   `json:"s3_path"`
-	Width        int      `json:"width"`
-	Height       int      `json:"height"`
-	Duration     int      `json:"duration"`
-	Qualities     []string `json:"qualities"`
-	CloudfrontURL string   `json:"cloudfront_url"`
+	MediaFileID   int              `json:"media_file_id"`
+	Title         string           `json:"title"`
+	S3Path        string           `json:"s3_path"`
+	Width         int              `json:"width"`
+	Height        int              `json:"height"`
+	Duration      int              `json:"duration"`
+	FPS           int              `json:"fps"`
+	Qualities     []string         `json:"qualities"`
+	CloudfrontURL string           `json:"cloudfront_url"`
+	CallbackURL   string           `json:"callback_url"`
+	GOPSize       int              `json:"gop_size"`
+	Watermark     *WatermarkConfig `json:"watermark,omitempty"`
 }
 
 type ConvertResponse struct {
@@ -76,10 +88,10 @@ type HealthResponse struct {
 }
 
 type ConversionJob struct {
-	ID                string
-	Request           ConvertRequest
-	Cancel            context.CancelFunc
-	Ctx               context.Context
+	ID                 string
+	Request            ConvertRequest
+	Cancel             context.CancelFunc
+	Ctx                context.Context
 	CompletedQualities []string
-	Mu                sync.Mutex
+	Mu                 sync.Mutex
 }

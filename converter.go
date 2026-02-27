@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -88,6 +89,18 @@ func processJob(job *ConversionJob) {
 		return
 	}
 
+	// ✅ Download watermark se configurado
+	watermarkPath := ""
+	if req.Watermark != nil && req.Watermark.Enabled && req.Watermark.S3Path != "" {
+		watermarkPath = filepath.Join(tempDir, "watermark"+filepath.Ext(req.Watermark.S3Path))
+		log.Printf("[CONVERTER] Job %s: Baixando watermark de %s", job.ID, req.Watermark.S3Path)
+		
+		if err := s3c.Download(job.Ctx, req.Watermark.S3Path, watermarkPath); err != nil {
+			log.Printf("[CONVERTER] Aviso: erro ao baixar watermark: %v", err)
+			watermarkPath = "" // Continua sem watermark
+		}
+	}
+
 	// Process each quality sequentially
 	for _, quality := range req.Qualities {
 		select {
@@ -98,7 +111,7 @@ func processJob(job *ConversionJob) {
 		}
 
 		log.Printf("[CONVERTER] Job %s: Iniciando conversão para %s", job.ID, quality)
-		err := convertQuality(job, s3c, originalPath, tempDir, quality)
+		err := convertQuality(job, s3c, originalPath, watermarkPath, tempDir, quality)
 		if err != nil {
 			log.Printf("[CONVERTER] Job %s: Erro na conversão %s: %v", job.ID, quality, err)
 			sendCallback(getCallbackURL(), CallbackPayload{
@@ -140,7 +153,7 @@ func processJob(job *ConversionJob) {
 	log.Printf("[CONVERTER] Job %s: Todas as qualidades processadas", job.ID)
 }
 
-func convertQuality(job *ConversionJob, s3c *S3Client, originalPath string, tempDir string, quality string) error {
+func convertQuality(job *ConversionJob, s3c *S3Client, originalPath string, watermarkPath string, tempDir string, quality string) error {
 	settings, ok := QualityMap[quality]
 	if !ok {
 		return fmt.Errorf("qualidade desconhecida: %s", quality)
@@ -154,23 +167,102 @@ func convertQuality(job *ConversionJob, s3c *S3Client, originalPath string, temp
 	outputPlaylist := filepath.Join(qualityDir, "master.m3u8")
 	segmentPattern := filepath.Join(qualityDir, "segment_%03d.ts")
 
+	// ✅ Calcula GOP dinâmico baseado no FPS ou usa padrão
+	gopSize := 60 // padrão 60 (30fps * 2)
+	if job.Request.GOPSize > 0 {
+		gopSize = job.Request.GOPSize
+	}
+
+	// ✅ Monta filtro de watermark se configurado
+	watermarkFilter := ""
+	if watermarkPath != "" && job.Request.Watermark != nil && job.Request.Watermark.Enabled {
+		wm := job.Request.Watermark
+		
+		// Calcula posição
+		position := getPositionFilter(wm.Position, wm.Size)
+		
+		// Calcula opacidade (0-100 para 0.0-1.0)
+		opacity := wm.Opacity / 100.0
+		if opacity < 0 {
+			opacity = 0
+		}
+		if opacity > 1 {
+			opacity = 1
+		}
+
+		// Monta filtro complexo de watermark
+		watermarkFilter = fmt.Sprintf(
+			"[1:v]format=rgba,scale=iw*%d/100:-1,coloralpha=0x000000@%.2f[wm];[0:v][wm]overlay=%s:eof_action=pass[outv];",
+			wm.Size,
+			opacity,
+			position,
+		)
+	}
+
+	// ✅ Monta args do ffmpeg
 	args := []string{
 		"-i", originalPath,
-		"-vf", fmt.Sprintf("scale=%s", settings.Scale),
+	}
+
+	// Adiciona watermark se existir
+	if watermarkPath != "" && watermarkFilter != "" {
+		args = append(args, "-i", watermarkPath)
+	}
+
+	// Filtros de vídeo
+	videoFilters := []string{
+		fmt.Sprintf("scale=%s", settings.Scale),
+	}
+
+	// Adiciona filtro de watermark se existir
+	if watermarkFilter != "" {
+		videoFilters = append(videoFilters, watermarkFilter)
+	}
+
+	// Monta filtro final
+	vf := strings.Join(videoFilters, ",")
+	if watermarkFilter != "" {
+		// Usa output do filtro de watermark
+		args = append(args,
+			"-filter_complex", vf,
+			"-map", "[outv]",
+		)
+	} else {
+		args = append(args, "-vf", vf)
+	}
+
+	// Configurações de vídeo
+	args = append(args,
 		"-c:v", "libx264",
 		"-preset", "medium",
-		"-b:v", settings.Bitrate,
-		"-maxrate", settings.MaxRate,
-		"-bufsize", settings.BufSize,
+		"-crf", "22",
+		"-maxrate", "3000k",
+		"-bufsize", "6000k",
+		"-profile:v", "high",
+		"-level", "4.1",
+		"-pix_fmt", "yuv420p",
+		"-g", strconv.Itoa(gopSize),
+		"-keyint_min", strconv.Itoa(gopSize),
+		"-sc_threshold", "0",
+	)
+
+	// Configurações de áudio
+	args = append(args,
 		"-c:a", "aac",
 		"-b:a", "128k",
 		"-ac", "2",
+	)
+
+	// Configurações HLS
+	args = append(args,
 		"-f", "hls",
 		"-hls_time", "6",
 		"-hls_list_size", "0",
+		"-hls_playlist_type", "vod",
+		"-hls_flags", "independent_segments",
 		"-hls_segment_filename", segmentPattern,
 		outputPlaylist,
-	}
+	)
 
 	log.Printf("[FFMPEG] Executando: %s %s", getFFmpegPath(), strings.Join(args, " "))
 	start := time.Now()
@@ -196,6 +288,28 @@ func convertQuality(job *ConversionJob, s3c *S3Client, originalPath string, temp
 	}
 
 	return nil
+}
+
+// getPositionFilter retorna o filtro de posição para overlay
+func getPositionFilter(position string, size int) string {
+	// size é porcentagem da largura do vídeo
+	// Calcula margem como 2% da largura
+	margin := "W*0.02"
+	
+	switch position {
+	case "top-left":
+		return fmt.Sprintf("%s:%s", margin, margin)
+	case "top-right":
+		return fmt.Sprintf("W-w-%s:%s", margin, margin)
+	case "bottom-left":
+		return fmt.Sprintf("%s:H-h-%s", margin, margin)
+	case "center":
+		return fmt.Sprintf("(W-w)/2:(H-h)/2")
+	case "bottom-right":
+		fallthrough
+	default:
+		return fmt.Sprintf("W-w-%s:H-h-%s", margin, margin)
+	}
 }
 
 func generateAndUploadMasterPlaylist(ctx context.Context, s3c *S3Client, tempDir string, mediaFileID int, completedQualities []string) error {

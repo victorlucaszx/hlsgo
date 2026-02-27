@@ -49,9 +49,8 @@ type ConvertRequest struct {
 	Width        int      `json:"width"`
 	Height       int      `json:"height"`
 	Duration     int      `json:"duration"`
-	Qualities    []string `json:"qualities"`
-	CallbackURL  string   `json:"callback_url"`
-	CloudfrontURL string  `json:"cloudfront_url"`
+	Qualities     []string `json:"qualities"`
+	CloudfrontURL string   `json:"cloudfront_url"`
 }
 
 type ConvertResponse struct {

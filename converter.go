@@ -29,6 +29,13 @@ func getTempDir() string {
 	return "/tmp/hls-conversions"
 }
 
+func getCallbackURL() string {
+	if u := os.Getenv("CALLBACK_URL"); u != "" {
+		return u
+	}
+	return "http://localhost:8000/api/hls/callback"
+}
+
 func processJob(job *ConversionJob) {
 	req := job.Request
 	tempDir := filepath.Join(getTempDir(), job.ID)
@@ -36,7 +43,7 @@ func processJob(job *ConversionJob) {
 	if err := os.MkdirAll(tempDir, 0755); err != nil {
 		log.Printf("[CONVERTER] Erro ao criar diretório temp %s: %v", tempDir, err)
 		for _, q := range req.Qualities {
-			sendCallback(req.CallbackURL, CallbackPayload{
+			sendCallback(getCallbackURL(), CallbackPayload{
 				MediaID:      req.MediaFileID,
 				Quality:      q,
 				Status:       "failed",
@@ -54,7 +61,7 @@ func processJob(job *ConversionJob) {
 	if err != nil {
 		log.Printf("[CONVERTER] Erro ao criar cliente S3: %v", err)
 		for _, q := range req.Qualities {
-			sendCallback(req.CallbackURL, CallbackPayload{
+			sendCallback(getCallbackURL(), CallbackPayload{
 				MediaID:      req.MediaFileID,
 				Quality:      q,
 				Status:       "failed",
@@ -71,7 +78,7 @@ func processJob(job *ConversionJob) {
 	if err := s3c.Download(job.Ctx, req.S3Path, originalPath); err != nil {
 		log.Printf("[CONVERTER] Erro ao baixar original: %v", err)
 		for _, q := range req.Qualities {
-			sendCallback(req.CallbackURL, CallbackPayload{
+			sendCallback(getCallbackURL(), CallbackPayload{
 				MediaID:      req.MediaFileID,
 				Quality:      q,
 				Status:       "failed",
@@ -94,7 +101,7 @@ func processJob(job *ConversionJob) {
 		err := convertQuality(job, s3c, originalPath, tempDir, quality)
 		if err != nil {
 			log.Printf("[CONVERTER] Job %s: Erro na conversão %s: %v", job.ID, quality, err)
-			sendCallback(req.CallbackURL, CallbackPayload{
+			sendCallback(getCallbackURL(), CallbackPayload{
 				MediaID:      req.MediaFileID,
 				Quality:      quality,
 				Status:       "failed",
@@ -117,7 +124,7 @@ func processJob(job *ConversionJob) {
 		qualityS3Path := fmt.Sprintf("hls/%d/%s/master.m3u8", req.MediaFileID, quality)
 		log.Printf("[CONVERTER] Job %s: Conversão %s concluída. S3: %s", job.ID, quality, qualityS3Path)
 
-		sendCallback(req.CallbackURL, CallbackPayload{
+		sendCallback(getCallbackURL(), CallbackPayload{
 			MediaID: req.MediaFileID,
 			Quality: quality,
 			Status:  "completed",

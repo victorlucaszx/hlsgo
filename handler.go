@@ -30,8 +30,8 @@ func (h *Handler) HandleConvert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.MediaFileID == 0 || req.S3Path == "" || len(req.Qualities) == 0 || req.CallbackURL == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Campos obrigatórios: media_file_id, s3_path, qualities, callback_url"})
+	if req.MediaFileID == 0 || req.S3Path == "" || len(req.Qualities) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Campos obrigatórios: media_file_id, s3_path, qualities"})
 		return
 	}
 
